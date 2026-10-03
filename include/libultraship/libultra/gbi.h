@@ -201,6 +201,8 @@
 #define G_SET_STRICT_DECAL 0x4B
 #define G_SETUNIFORM 0x4C
 #define G_SETTILESCROLL_INTERP 0x4D
+#define G_COPYFB_DEPTH 0x4E
+#define G_SETTIMG_FB_DEPTH 0x4F
 
 /*
  * The following commands are the "generated" RDP commands; the user
@@ -2799,6 +2801,31 @@ typedef union Gfx {
         _g->words.w0 = _SHIFTL(G_COPYFB, 24, 8) | _SHIFTL(dst, 11, 11) | _SHIFTL(src, 0, 11) | _SHIFTL(once, 22, 1); \
         _g->words.w1 = (uintptr_t)copiedPtr;                                                                         \
     }
+
+// Copy a framebuffer's depth buffer into another framebuffer of the same size, for shaders to read the
+// scene depth (src 0 is the game's framebuffer). Only on backends where gfx_supports_depth_sampling().
+#define gDPCopyFBDepth(pkt, dst, src)                                                               \
+    {                                                                                               \
+        Gfx* _g = (Gfx*)(pkt);                                                                      \
+                                                                                                    \
+        _g->words.w0 = _SHIFTL(G_COPYFB_DEPTH, 24, 8) | _SHIFTL(dst, 11, 11) | _SHIFTL(src, 0, 11); \
+        _g->words.w1 = 0;                                                                           \
+    }
+
+#define gsDPCopyFBDepth(dst, src) { _SHIFTL(G_COPYFB_DEPTH, 24, 8) | _SHIFTL(dst, 11, 11) | _SHIFTL(src, 0, 11), 0 }
+
+// Bind a framebuffer's depth as the texture of a tile; a custom shader reads it with texel fetches at the
+// fragment position (the depth copy has the size of the game's framebuffer)
+#define gDPSetTextureImageFBDepth(pkt, tile, fb)                                 \
+    {                                                                            \
+        Gfx* _g = (Gfx*)(pkt);                                                   \
+                                                                                 \
+        _g->words.w0 = _SHIFTL(G_SETTIMG_FB_DEPTH, 24, 8) | _SHIFTL(tile, 0, 3); \
+        _g->words.w1 = (uintptr_t)(fb);                                          \
+    }
+
+#define gsDPSetTextureImageFBDepth(tile, fb) \
+    { _SHIFTL(G_SETTIMG_FB_DEPTH, 24, 8) | _SHIFTL(tile, 0, 3), (uintptr_t)(fb) }
 
 // Read the framebuffer's texture to a cpu memory location as RGBA16
 #define gDPReadFB(pkt, src, rgba16buf, ulx, uly, width, height, bswap)                        \

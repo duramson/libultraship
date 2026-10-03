@@ -103,11 +103,14 @@ struct TextureDataVK {
     uint32_t filtering = 0;
     bool linear_filtering = false;
     bool isSwapchainAlias = false; // fb 0: view belongs to the swapchain
+    bool isFbDepthAlias = false;   // view belongs to a framebuffer's depth buffer
     bool auto_mipmaps = false;
 };
 
 struct FramebufferVK {
     uint32_t mTextureId = 0;
+    // Texture registry entry aliasing the depth view for SelectTextureFbDepth (UINT32_MAX until first use)
+    uint32_t mDepthTextureId = UINT32_MAX;
 
     VkImage mDepthImage = VK_NULL_HANDLE;
     VkDeviceMemory mDepthMemory = VK_NULL_HANDLE;
@@ -199,6 +202,9 @@ class GfxRenderingAPIVK final : public GfxRenderingAPI {
     GetPixelDepth(int fb_id, const std::set<std::pair<float, float>>& coordinates) override;
     void* GetFramebufferTextureId(int fbId) override;
     void SelectTextureFb(int fbId) override;
+    bool SupportsDepthSampling() override;
+    void CopyFramebufferDepth(int fbDstId, int fbSrcId) override;
+    void SelectTextureFbDepth(int tile, int fbId) override;
     void DeleteTexture(uint32_t texId) override;
     void SetTextureFilter(FilteringMode mode) override;
     FilteringMode GetTextureFilter() override;

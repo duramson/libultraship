@@ -94,6 +94,8 @@ struct TextureDataMetal {
 
 struct FramebufferMetal {
     MTL::CommandBuffer* mCommandBuffer;
+    // Texture registry entry aliasing mDepthTexture for SelectTextureFbDepth (UINT32_MAX until first use)
+    uint32_t mDepthTextureId = UINT32_MAX;
     MTL::RenderPassDescriptor* mRenderPassDescriptor;
     MTL::RenderCommandEncoder* mCommandEncoder;
 
@@ -199,6 +201,9 @@ class GfxRenderingAPIMetal final : public GfxRenderingAPI {
     GetPixelDepth(int fb_id, const std::set<std::pair<float, float>>& coordinates) override;
     void* GetFramebufferTextureId(int fbId) override;
     void SelectTextureFb(int fbId) override;
+    bool SupportsDepthSampling() override;
+    void CopyFramebufferDepth(int fbDstId, int fbSrcId) override;
+    void SelectTextureFbDepth(int tile, int fbId) override;
     void DeleteTexture(uint32_t texId) override;
     void SetTextureFilter(FilteringMode mode) override;
     FilteringMode GetTextureFilter() override;
@@ -212,6 +217,9 @@ class GfxRenderingAPIMetal final : public GfxRenderingAPI {
   private:
     bool NonUniformThreadGroupSupported();
     void SetupScreenFramebuffer(uint32_t width, uint32_t height);
+    // Ends the framebuffer's render encoder and opens a new one that keeps what was drawn, so its
+    // textures can be read or copied in between (call `between` while the encoder is closed).
+    template <typename F> void ReopenRenderEncoder(int fbId, const char* label, F between);
     // Elements that only need to be setup once
     SDL_Renderer* mRenderer = nullptr;
     CA::MetalLayer* mLayer = nullptr; // CA::MetalLayer*

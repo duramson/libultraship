@@ -1309,49 +1309,7 @@ void GfxRenderingAPIMetal::SelectTextureFb(int fb_id) {
     // subsequent rendering to this framebuffer preserves what was drawn.
     FramebufferMetal& src = mFramebuffers[fb_id];
     if (src.mCommandEncoder != nullptr && !src.mHasEndedEncoding) {
-        src.mCommandEncoder->endEncoding();
-
-        MTL::RenderPassColorAttachmentDescriptor* colorAttachment =
-            src.mRenderPassDescriptor->colorAttachments()->object(0);
-        MTL::LoadAction origColorLoad = colorAttachment->loadAction();
-        colorAttachment->setLoadAction(MTL::LoadActionLoad);
-
-        MTL::RenderPassDepthAttachmentDescriptor* depthAttachment = src.mRenderPassDescriptor->depthAttachment();
-        MTL::LoadAction origDepthLoad = MTL::LoadActionDontCare;
-        if (src.mHasDepthBuffer) {
-            origDepthLoad = depthAttachment->loadAction();
-            depthAttachment->setLoadAction(MTL::LoadActionLoad);
-        }
-
-        src.mCommandEncoder = src.mCommandBuffer->renderCommandEncoder(src.mRenderPassDescriptor);
-        std::string label = fmt::format("FrameBuffer {} Command Encoder After SelectTextureFb", fb_id);
-        src.mCommandEncoder->setLabel(NS::String::string(label.c_str(), NS::UTF8StringEncoding));
-        src.mCommandEncoder->setDepthClipMode(MTL::DepthClipModeClamp);
-        src.mCommandEncoder->setViewport(*src.mViewport);
-        src.mCommandEncoder->setScissorRect(*src.mScissorRect);
-
-        colorAttachment->setLoadAction(origColorLoad);
-        if (src.mHasDepthBuffer) {
-            depthAttachment->setLoadAction(origDepthLoad);
-        }
-
-        src.mHasBoundVertexShader = false;
-        src.mHasBoundFragShader = false;
-        src.mLastShaderProgram = nullptr;
-        for (int i = 0; i < SHADER_MAX_TEXTURES; i++) {
-            src.mLastBoundTextures[i] = nullptr;
-            src.mLastBoundSamplers[i] = nullptr;
-        }
-        src.mLastDepthTest = -1;
-        src.mLastDepthMask = -1;
-        src.mLastZmodeDecal = -1;
-        src.mLastStrictDecal = -1;
-
-        // New encoder — force fragment uniform re-send (see comment in ClearFramebuffer).
-        mCombinerUniformsDirty = true;
-        mPrimDepthDirty = true;
-        mLodMaxDirty = true;
-        mCustomUniformsDirty = true;
+        ReopenRenderEncoder(fb_id, "After SelectTextureFb", [] {});
     }
 
     int tile = 0;
@@ -1372,64 +1330,109 @@ void GfxRenderingAPIMetal::CopyFramebuffer(int fb_dst_id, int fb_src_id, int src
     int target_texture_id = mFramebuffers[fb_dst_id].mTextureId;
     MTL::Texture* target_texture = mTextures[target_texture_id].texture;
 
+    ReopenRenderEncoder(fb_src_id, "After Copy", [&] {
+        // Create a blit encoder
+        MTL::BlitCommandEncoder* blit_encoder = source_framebuffer.mCommandBuffer->blitCommandEncoder();
+        blit_encoder->setLabel(NS::String::string("Copy Framebuffer Encoder", NS::UTF8StringEncoding));
+
+        MTL::Origin source_origin = MTL::Origin(srcX0, srcY0, 0);
+        MTL::Origin target_origin = MTL::Origin(dstX0, dstY0, 0);
+        MTL::Size source_size = MTL::Size(srcX1 - srcX0, srcY1 - srcY0, 1);
+
+        // Copy the texture over using the origins and size
+        blit_encoder->copyFromTexture(source_texture, 0, 0, source_origin, source_size, target_texture, 0, 0,
+                                      target_origin);
+        blit_encoder->endEncoding();
+    });
+}
+
+bool GfxRenderingAPIMetal::SupportsDepthSampling() {
+    return true;
+}
+
+void GfxRenderingAPIMetal::CopyFramebufferDepth(int fb_dst_id, int fb_src_id) {
+    if (fb_src_id >= (int)mFramebuffers.size() || fb_dst_id >= (int)mFramebuffers.size()) {
+        return;
+    }
+    FramebufferMetal& src = mFramebuffers[fb_src_id];
+    FramebufferMetal& dst = mFramebuffers[fb_dst_id];
+    if (src.mDepthTexture == nullptr || dst.mDepthTexture == nullptr || src.mCommandEncoder == nullptr ||
+        src.mDepthTexture->width() != dst.mDepthTexture->width() ||
+        src.mDepthTexture->height() != dst.mDepthTexture->height()) {
+        return;
+    }
+
+    // Ending the encoder stores the depth (and resolves it when the framebuffer is multisampled)
+    ReopenRenderEncoder(fb_src_id, "After Depth Copy", [&] {
+        MTL::BlitCommandEncoder* blit_encoder = src.mCommandBuffer->blitCommandEncoder();
+        blit_encoder->setLabel(NS::String::string("Copy Framebuffer Depth Encoder", NS::UTF8StringEncoding));
+        blit_encoder->copyFromTexture(src.mDepthTexture, dst.mDepthTexture);
+        blit_encoder->endEncoding();
+    });
+}
+
+void GfxRenderingAPIMetal::SelectTextureFbDepth(int tile, int fb_id) {
+    if (fb_id >= (int)mFramebuffers.size() || mFramebuffers[fb_id].mDepthTexture == nullptr) {
+        return;
+    }
+    FramebufferMetal& fb = mFramebuffers[fb_id];
+    if (fb.mDepthTextureId == UINT32_MAX) {
+        fb.mDepthTextureId = NewTexture();
+    }
+    // The depth texture is recreated on resize, so refresh the alias on every bind
+    TextureDataMetal& tex = mTextures[fb.mDepthTextureId];
+    tex.texture = fb.mDepthTexture;
+    tex.width = fb.mDepthTexture->width();
+    tex.height = fb.mDepthTexture->height();
+    SelectTexture(tile, fb.mDepthTextureId);
+}
+
+template <typename F> void GfxRenderingAPIMetal::ReopenRenderEncoder(int fb_id, const char* label, F between) {
+    FramebufferMetal& fb = mFramebuffers[fb_id];
+
     // End the current render encoder
-    source_framebuffer.mCommandEncoder->endEncoding();
+    fb.mCommandEncoder->endEncoding();
 
-    // Create a blit encoder
-    MTL::BlitCommandEncoder* blit_encoder = source_framebuffer.mCommandBuffer->blitCommandEncoder();
-    blit_encoder->setLabel(NS::String::string("Copy Framebuffer Encoder", NS::UTF8StringEncoding));
+    between();
 
-    MTL::Origin source_origin = MTL::Origin(srcX0, srcY0, 0);
-    MTL::Origin target_origin = MTL::Origin(dstX0, dstY0, 0);
-    MTL::Size source_size = MTL::Size(srcX1 - srcX0, srcY1 - srcY0, 1);
+    // Track the original load actions and load what was drawn into the new encoder
+    MTL::RenderPassColorAttachmentDescriptor* colorAttachment = fb.mRenderPassDescriptor->colorAttachments()->object(0);
+    MTL::LoadAction origColorLoad = colorAttachment->loadAction();
+    colorAttachment->setLoadAction(MTL::LoadActionLoad);
 
-    // Copy the texture over using the origins and size
-    blit_encoder->copyFromTexture(source_texture, 0, 0, source_origin, source_size, target_texture, 0, 0,
-                                  target_origin);
-    blit_encoder->endEncoding();
-
-    // Track the original load action and set the next load actions to Load to leverage the blit results
-    MTL::RenderPassColorAttachmentDescriptor* srcColorAttachment =
-        source_framebuffer.mRenderPassDescriptor->colorAttachments()->object(0);
-    MTL::LoadAction origLoadAction = srcColorAttachment->loadAction();
-    srcColorAttachment->setLoadAction(MTL::LoadActionLoad);
-
-    MTL::RenderPassDepthAttachmentDescriptor* srcDepthAttachment =
-        source_framebuffer.mRenderPassDescriptor->depthAttachment();
-    MTL::LoadAction origDepthLoadAction = MTL::LoadActionDontCare;
-    if (source_framebuffer.mHasDepthBuffer) {
-        origDepthLoadAction = srcDepthAttachment->loadAction();
-        srcDepthAttachment->setLoadAction(MTL::LoadActionLoad);
+    MTL::RenderPassDepthAttachmentDescriptor* depthAttachment = fb.mRenderPassDescriptor->depthAttachment();
+    MTL::LoadAction origDepthLoad = MTL::LoadActionDontCare;
+    if (fb.mHasDepthBuffer) {
+        origDepthLoad = depthAttachment->loadAction();
+        depthAttachment->setLoadAction(MTL::LoadActionLoad);
     }
 
     // Create a new render encoder back onto the framebuffer
-    source_framebuffer.mCommandEncoder =
-        source_framebuffer.mCommandBuffer->renderCommandEncoder(source_framebuffer.mRenderPassDescriptor);
-
-    std::string fbce_label = fmt::format("FrameBuffer {} Command Encoder After Copy", fb_src_id);
-    source_framebuffer.mCommandEncoder->setLabel(NS::String::string(fbce_label.c_str(), NS::UTF8StringEncoding));
-    source_framebuffer.mCommandEncoder->setDepthClipMode(MTL::DepthClipModeClamp);
-    source_framebuffer.mCommandEncoder->setViewport(*source_framebuffer.mViewport);
-    source_framebuffer.mCommandEncoder->setScissorRect(*source_framebuffer.mScissorRect);
+    fb.mCommandEncoder = fb.mCommandBuffer->renderCommandEncoder(fb.mRenderPassDescriptor);
+    std::string encoderLabel = fmt::format("FrameBuffer {} Command Encoder {}", fb_id, label);
+    fb.mCommandEncoder->setLabel(NS::String::string(encoderLabel.c_str(), NS::UTF8StringEncoding));
+    fb.mCommandEncoder->setDepthClipMode(MTL::DepthClipModeClamp);
+    fb.mCommandEncoder->setViewport(*fb.mViewport);
+    fb.mCommandEncoder->setScissorRect(*fb.mScissorRect);
 
     // Now that the command encoder is started, we set the original load actions back for the next frame's use
-    srcColorAttachment->setLoadAction(origLoadAction);
-    if (source_framebuffer.mHasDepthBuffer) {
-        srcDepthAttachment->setLoadAction(origDepthLoadAction);
+    colorAttachment->setLoadAction(origColorLoad);
+    if (fb.mHasDepthBuffer) {
+        depthAttachment->setLoadAction(origDepthLoad);
     }
 
     // Reset the framebuffer so the encoder is setup again when rendering triangles
-    source_framebuffer.mHasBoundVertexShader = false;
-    source_framebuffer.mHasBoundFragShader = false;
-    source_framebuffer.mLastShaderProgram = nullptr;
+    fb.mHasBoundVertexShader = false;
+    fb.mHasBoundFragShader = false;
+    fb.mLastShaderProgram = nullptr;
     for (int i = 0; i < SHADER_MAX_TEXTURES; i++) {
-        source_framebuffer.mLastBoundTextures[i] = nullptr;
-        source_framebuffer.mLastBoundSamplers[i] = nullptr;
+        fb.mLastBoundTextures[i] = nullptr;
+        fb.mLastBoundSamplers[i] = nullptr;
     }
-    source_framebuffer.mLastDepthTest = -1;
-    source_framebuffer.mLastDepthMask = -1;
-    source_framebuffer.mLastZmodeDecal = -1;
-    source_framebuffer.mLastStrictDecal = -1;
+    fb.mLastDepthTest = -1;
+    fb.mLastDepthMask = -1;
+    fb.mLastZmodeDecal = -1;
+    fb.mLastStrictDecal = -1;
 
     // New encoder — force fragment uniform re-send (see comment in ClearFramebuffer).
     mCombinerUniformsDirty = true;

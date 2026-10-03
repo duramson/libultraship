@@ -5591,6 +5591,25 @@ bool gfx_copy_fb_handler_custom(F3DGfx** cmd0) {
     return false;
 }
 
+bool gfx_copy_fb_depth_handler_custom(F3DGfx** cmd0) {
+    Interpreter* gfx = mInstance.lock().get();
+    F3DGfx* cmd = *cmd0;
+
+    gfx->CopyFrameBufferDepth(C0(11, 11), C0(0, 11));
+    return false;
+}
+
+bool gfx_set_timg_fb_depth_handler_custom(F3DGfx** cmd0) {
+    Interpreter* gfx = mInstance.lock().get();
+    F3DGfx* cmd = *cmd0;
+    const int tile = C0(0, 3) & 1;
+
+    gfx->Flush();
+    gfx->mRapi->SelectTextureFbDepth(tile, (int)cmd->words.w1);
+    gfx->mRdp->textures_changed[tile] = false;
+    return false;
+}
+
 bool gfx_read_fb_handler_custom(F3DGfx** cmd0) {
     Interpreter* gfx = mInstance.lock().get();
     F3DGfx* cmd = *cmd0;
@@ -6183,6 +6202,8 @@ static constexpr UcodeHandler otrHandlers = {
     { OTR_G_EXTRAGEOMETRYMODE,
       { "G_EXTRAGEOMETRYMODE", gfx_extra_geometry_mode_handler_custom } }, // G_EXTRAGEOMETRYMODE (0x3a)
     { OTR_G_COPYFB, { "G_COPYFB", gfx_copy_fb_handler_custom } },          // G_COPYFB (0x3b)
+    { OTR_G_COPYFB_DEPTH, { "G_COPYFB_DEPTH", gfx_copy_fb_depth_handler_custom } },
+    { OTR_G_SETTIMG_FB_DEPTH, { "G_SETTIMG_FB_DEPTH", gfx_set_timg_fb_depth_handler_custom } },
     { OTR_G_IMAGERECT, { "G_IMAGERECT", gfx_image_rect_handler_custom } }, // G_IMAGERECT (0x3c)
     { OTR_G_DL_INDEX, { "G_DL_INDEX", gfx_dl_index_handler } },            // G_DL_INDEX (0x3d)
     { OTR_G_READFB, { "G_READFB", gfx_read_fb_handler_custom } },          // G_READFB (0x3e)
@@ -6554,7 +6575,10 @@ void Interpreter::StartFrame() {
 
     mPrvDimensions = mCurDimensions;
     mPrevNativeDimensions = mNativeDimensions;
-    const bool postPassesActive = HasPostPasses();
+    // Post passes and depth copies both need the game in its own framebuffer
+    mDepthCopyWanted = mDepthCopyRequested;
+    mDepthCopyRequested = false;
+    const bool postPassesActive = HasPostPasses() || mDepthCopyWanted;
     if (!ViewportMatchesRendererResolution() || mMsaaLevel > 1 || postPassesActive) {
         mRendersToFb = true;
         if (!ViewportMatchesRendererResolution()) {
@@ -6813,6 +6837,20 @@ int Interpreter::CreateFrameBuffer(uint32_t width, uint32_t height, uint32_t nat
 void Interpreter::SetFrameBuffer(int fb, float noiseScale) {
     mRapi->StartDrawToFramebuffer(fb, noiseScale);
     mRapi->ClearFramebuffer(false, true);
+}
+
+void Interpreter::CopyFrameBufferDepth(int fb_dst_id, int fb_src_id) {
+    // The game's depth is only copyable while it renders to its own framebuffer; ask for that from the
+    // next frame on and keep asking while copies come in
+    mDepthCopyRequested = true;
+    if (fb_src_id == 0) {
+        if (!mRendersToFb) {
+            return;
+        }
+        fb_src_id = mGameFb;
+    }
+    Flush();
+    mRapi->CopyFramebufferDepth(fb_dst_id, fb_src_id);
 }
 
 void Interpreter::CopyFrameBuffer(int fb_dst_id, int fb_src_id, bool copyOnce, bool* hasCopiedPtr) {
@@ -7098,6 +7136,13 @@ extern "C" void gfx_set_custom_uniform(uint8_t idx, const float values[4]) {
     if (auto gfx = Fast::mInstance.lock()) {
         gfx->SetCustomUniform(idx, values);
     }
+}
+
+extern "C" bool gfx_supports_depth_sampling() {
+    if (auto gfx = Fast::mInstance.lock()) {
+        return gfx->mRapi != nullptr && gfx->mRapi->SupportsDepthSampling();
+    }
+    return false;
 }
 
 extern "C" int gfx_register_post_pass(const char* o2rShaderPath) {

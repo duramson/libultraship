@@ -715,8 +715,9 @@ void GfxRenderingAPIVK::RebuildScreenFramebuffer() {
             vkFreeMemory(mDevice, fb.mDepthMemory, nullptr);
         }
         CreateImage(width, height, 1, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_D32_SFLOAT,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, fb.mDepthImage,
-                    fb.mDepthMemory);
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    fb.mDepthImage, fb.mDepthMemory);
         fb.mDepthView = CreateImageView(fb.mDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
 
         VkCommandBuffer cmd = BeginOneShot();
@@ -1266,7 +1267,7 @@ uint32_t GfxRenderingAPIVK::NewTexture() {
 }
 
 void GfxRenderingAPIVK::DestroyTextureData(TextureDataVK& tex, bool deferred) {
-    if (tex.isSwapchainAlias) {
+    if (tex.isSwapchainAlias || tex.isFbDepthAlias) {
         return;
     }
     if (tex.imguiSet != VK_NULL_HANDLE) {
@@ -1964,8 +1965,9 @@ void GfxRenderingAPIVK::UpdateFramebufferParameters(int fbId, uint32_t width, ui
 
     if (has_depth_buffer) {
         CreateImage(width, height, 1, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_D32_SFLOAT,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, fb.mDepthImage,
-                    fb.mDepthMemory);
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    fb.mDepthImage, fb.mDepthMemory);
         fb.mDepthView = CreateImageView(fb.mDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
         TransitionToGeneral(cmd, fb.mDepthImage, VK_IMAGE_ASPECT_DEPTH_BIT, 1);
     }
@@ -2054,6 +2056,59 @@ void GfxRenderingAPIVK::CopyFramebuffer(int fbDstId, int fbSrcId, int srcX0, int
     if (wasActive) {
         RestartPass(src);
     }
+}
+
+bool GfxRenderingAPIVK::SupportsDepthSampling() {
+    return true;
+}
+
+void GfxRenderingAPIVK::CopyFramebufferDepth(int fbDstId, int fbSrcId) {
+    if (fbSrcId >= (int)mFramebuffers.size() || fbDstId >= (int)mFramebuffers.size() || !mFrameActive) {
+        return;
+    }
+    FramebufferVK& src = mFramebuffers[fbSrcId];
+    FramebufferVK& dst = mFramebuffers[fbDstId];
+    // A multisampled framebuffer renders into its MSAA depth image and never resolves it, so its
+    // single-sample depth image holds nothing to copy
+    if (src.mDepthImage == VK_NULL_HANDLE || dst.mDepthImage == VK_NULL_HANDLE || src.mMsaaLevel > 1 ||
+        src.mCommandBuffer == VK_NULL_HANDLE || src.mWidth != dst.mWidth || src.mHeight != dst.mHeight) {
+        return;
+    }
+
+    bool wasActive = src.mPassActive;
+    EndPass(src);
+    FullBarrier(src.mCommandBuffer);
+
+    VkImageCopy copy = {};
+    copy.srcSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
+    copy.dstSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
+    copy.extent = { src.mWidth, src.mHeight, 1 };
+    vkCmdCopyImage(src.mCommandBuffer, src.mDepthImage, VK_IMAGE_LAYOUT_GENERAL, dst.mDepthImage,
+                   VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+    FullBarrier(src.mCommandBuffer);
+
+    if (wasActive) {
+        RestartPass(src);
+    }
+}
+
+void GfxRenderingAPIVK::SelectTextureFbDepth(int tile, int fbId) {
+    if (fbId >= (int)mFramebuffers.size() || mFramebuffers[fbId].mDepthView == VK_NULL_HANDLE) {
+        return;
+    }
+    FramebufferVK& fb = mFramebuffers[fbId];
+    if (fb.mDepthTextureId == UINT32_MAX) {
+        fb.mDepthTextureId = NewTexture();
+    }
+    // The depth image is recreated on resize, so refresh the alias on every bind
+    TextureDataVK& tex = mTextures[fb.mDepthTextureId];
+    tex.isFbDepthAlias = true;
+    tex.image = fb.mDepthImage;
+    tex.view = fb.mDepthView;
+    tex.width = fb.mWidth;
+    tex.height = fb.mHeight;
+    tex.sampler = GetSampler(false, G_TX_CLAMP, G_TX_CLAMP, false);
+    SelectTexture(tile, fb.mDepthTextureId);
 }
 
 void GfxRenderingAPIVK::ResolveMSAAColorBuffer(int fbIdTarget, int fbIdSrc) {

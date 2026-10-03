@@ -156,6 +156,16 @@ class GfxRenderingAPI {
     GetPixelDepth(int fb_id, const std::set<std::pair<float, float>>& coordinates) = 0;
     virtual void* GetFramebufferTextureId(int fbId) = 0;
     virtual void SelectTextureFb(int fbId) = 0;
+    // Scene depth for shaders. CopyFramebufferDepth copies the depth buffer of fbSrcId into fbDstId (same size);
+    // SelectTextureFbDepth binds a framebuffer's depth as the texture of a tile, for a shader to read with
+    // texel fetches at the fragment position. Backends without support keep these as no-ops.
+    virtual bool SupportsDepthSampling() {
+        return false;
+    }
+    virtual void CopyFramebufferDepth(int fbDstId, int fbSrcId) {
+    }
+    virtual void SelectTextureFbDepth(int tile, int fbId) {
+    }
     virtual void DeleteTexture(uint32_t texId) = 0;
     virtual void SetTextureFilter(FilteringMode mode) = 0;
     virtual FilteringMode GetTextureFilter() = 0;

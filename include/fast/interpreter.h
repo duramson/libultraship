@@ -517,6 +517,7 @@ class Interpreter {
     // built-ins (see CustomUniforms); games use 2..GFX_NUM_CUSTOM_UNIFORMS-1.
     void SetCustomUniform(uint8_t idx, const float values[4]);
     void CopyFrameBuffer(int fb_dst_id, int fb_src_id, bool copyOnce, bool* hasCopiedPtr);
+    void CopyFrameBufferDepth(int fb_dst_id, int fb_src_id);
     void ResetFrameBuffer();
     void AdjustPixelDepthCoordinates(float& x, float& y);
     void GetPixelDepthPrepare(float x, float y);
@@ -729,6 +730,9 @@ class Interpreter {
 
     bool mFbActive{};
     bool mRendersToFb{}; // game_renders_to_framebuffer;
+    // A depth copy needs the game to render offscreen: requested during a frame, applied from the next one
+    bool mDepthCopyRequested{};
+    bool mDepthCopyWanted{};
     std::map<int, FBInfo>::iterator mActiveFrameBuffer;
     std::map<int, FBInfo> mFrameBuffers;
 
@@ -839,6 +843,7 @@ const char* GfxGetOpcodeName(int8_t opcode);
 extern "C" void gfx_texture_cache_clear();
 extern "C" void gfx_set_custom_uniform(uint8_t idx, const float values[4]);
 extern "C" int gfx_register_post_pass(const char* o2rShaderPath);
+extern "C" bool gfx_supports_depth_sampling();
 extern "C" void gfx_unregister_post_pass(int id);
 extern "C" void gfx_clear_post_passes();
 extern "C" void gfx_shader_cache_clear();
