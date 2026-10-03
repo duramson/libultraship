@@ -255,9 +255,17 @@ bool Fast3dWindow::DrawAndRunGraphicsCommands(Gfx* commands, const std::unordere
     // render + present. Otherwise acquiring a backend drawable can block on the
     // compositor (Metal's nextDrawable stalls ~1s per frame while occluded), which
     // looks like the game lagging in the background. Game logic has already run for
-    // this tick; we just don't draw. Yield briefly so the loop doesn't busy-spin.
+    // this tick; we just don't draw. Wait until the frame would have been presented,
+    // so the frame pacing (and with it game speed and audio) stays the same.
     if (!mWindowManagerApi->IsWindowVisible()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+        const auto interval = std::chrono::nanoseconds(1000000000LL / std::max(1, mWindowManagerApi->GetTargetFps()));
+        const auto now = std::chrono::steady_clock::now();
+        // Start over after a pause instead of catching up with a burst of frames
+        if (mHiddenFrameDue + interval < now) {
+            mHiddenFrameDue = now;
+        }
+        mHiddenFrameDue += interval;
+        std::this_thread::sleep_until(mHiddenFrameDue);
         return false;
     }
 
