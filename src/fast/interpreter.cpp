@@ -1815,7 +1815,10 @@ static void ScaleAlphaToCoverage(uint8_t* buf, size_t count, float targetCoverag
             break;
         }
     }
-    if (at <= 0) {
+    // Only raise alpha. A threshold at or above 0.5 means the level already keeps its
+    // coverage; scaling down would turn opaque texels translucent wherever the texture is
+    // blended instead of alpha tested (HUD panels, decals).
+    if (at <= 0 || at >= 128) {
         return;
     }
     // Map that threshold to 0.5 (128) so coverage is preserved after the test.
