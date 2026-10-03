@@ -237,7 +237,7 @@ float4 mod(float4 a, float4 b) {
 #define WRAP(x, low, high) mod((x)-(low), (high)-(low)) + (low)
 #define TEX_OFFSET(tex, texSmplr, texCoord, off, texSize) tex.sample(texSmplr, texCoord - off / texSize)
 
-float4 filter3point(thread const texture2d<float> tex, thread const sampler texSmplr, thread const float2& texCoord, thread const float2& texSize) {
+float4 filter3point(const texture2d<float> tex, const sampler texSmplr, thread const float2& texCoord, thread const float2& texSize) {
     float2 offset = fract((texCoord * texSize) - float2(0.5));
     offset -= float2(step(1.0, offset.x + offset.y));
     float4 c0 = TEX_OFFSET(tex, texSmplr, texCoord, offset, texSize);
@@ -246,7 +246,7 @@ float4 filter3point(thread const texture2d<float> tex, thread const sampler texS
     return c0 + abs(offset.x) * (c1 - c0) + abs(offset.y) * (c2 - c0);
 }
 
-float4 hookTexture2D(thread const texture2d<float> tex, thread const sampler texSmplr, thread const float2& uv, thread const float2& texSize, thread const int filtering) {
+float4 hookTexture2D(const texture2d<float> tex, const sampler texSmplr, thread const float2& uv, thread const float2& texSize, const int filtering) {
 @if(o_three_point_filtering)
     if(filtering == @{FILTER_THREE_POINT}) {
         return filter3point(tex, texSmplr, uv, texSize);
@@ -303,8 +303,8 @@ float3 applyRdpDither(float3 color, float modeF, float2 fragCoord, float noiseSc
 @if(o_palette[0] || o_palette[1])
 // One CI tap: fetch the index (nearest sampler) and look it up in the
 // 256-entry palette texture. bank is the CI4 bank entry offset.
-float4 paletteTap(thread const texture2d<float> tex, thread const sampler texSmplr,
-                  thread const texture2d<float> pal, thread const sampler palSmplr,
+float4 paletteTap(const texture2d<float> tex, const sampler texSmplr,
+                  const texture2d<float> pal, const sampler palSmplr,
                   float2 uv, float bank) {
     float idx = tex.sample(texSmplr, uv).r;
     return pal.sample(palSmplr, float2((idx * 255.0 + bank + 0.5) / 256.0, 0.5));
@@ -312,8 +312,8 @@ float4 paletteTap(thread const texture2d<float> tex, thread const sampler texSmp
 
 // Filtering happens after the palette lookup, like real hardware:
 // params.y selects nearest (0), bilinear (1) or N64 three-point (2).
-float4 paletteSample(thread const texture2d<float> tex, thread const sampler texSmplr,
-                     thread const texture2d<float> pal, thread const sampler palSmplr,
+float4 paletteSample(const texture2d<float> tex, const sampler texSmplr,
+                     const texture2d<float> pal, const sampler palSmplr,
                      float2 uv, float2 texSize, float4 params) {
     if (params.y > 1.5) {
         float2 offset = fract(uv * texSize - float2(0.5));
